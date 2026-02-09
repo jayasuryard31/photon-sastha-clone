@@ -1,261 +1,105 @@
-const { MatchService } = require('../services/matchService');
-const {
-    upsertPlayer,
-    updatePlayerPosition,
-    removePlayer,
-    createMatch,
-    listMatches,
-    listPlayers,
-} = require('../db/repositories');
+const createGameEventHandlers = ({ matchmakingService }) => {
+  const emitPlayerState = async (socket, io) => {
+    const state = await matchmakingService.getGameState();
+    socket.emit('game:state', state);
+  };
 
-const matchService = new MatchService();
-
-let gameState = {
-    players: {},
-    isGameActive: false,
-};
-
-const hydratePlayers = async (socketIds) => {
-    const missing = socketIds.filter((id) => !gameState.players[id]);
-    if (missing.length) {
-        const dbPlayers = await listPlayers();
-        dbPlayers.forEach((p) => {
-            gameState.players[p.socketId] = {
-                id: p.socketId,
-                username: p.username,
-                position: p.position,
-                score: p.score,
-                room: p.room,
-            };
-        });
-        console.log(`[matchmaking] hydrated players from DB`, { missing, hydrated: dbPlayers.map((p) => p.socketId) });
-    }
-    return socketIds.map((id) => gameState.players[id]).filter(Boolean);
-};
-
-const gameEventHandlers = (socket, io) => {
-    socket.on('player:join', async (payload = {}) => {
-        console.log(`[socket:${socket.id}] player:join received`, payload);
-        const player = handlePlayerJoin(socket, payload);
-        await upsertPlayer(player);
-
-        const state = await getGameState();
-        socket.emit('game:state', state);
-        // Let the joining player know immediately
-        socket.emit('player:joined', player);
-        console.log(`[socket:${socket.id}] player persisted and player:joined emitted to self`);
-        socket.broadcast.emit('player:joined', player);
-        console.log(`[socket:${socket.id}] player:joined broadcast to others`);
-    });
-
-    socket.on('player:move', async (movementData = { x: 0, y: 0 }) => {
-        console.log(`[socket:${socket.id}] player:move`, movementData);
-        await handlePlayerMove(socket, movementData, io);
-    });
-
-    socket.on('queue:join', async () => {
-        console.log(`[socket:${socket.id}] queue:join (create lobby as host)`);
-        await createLobbyForHost(socket, io);
-    });
-
-    socket.on('lobby:join', async ({ gameId } = {}) => {
-        console.log(`[socket:${socket.id}] lobby:join`, { gameId });
-        const payload = await joinLobbyById(socket, io, gameId);
-        if (!payload) {
-            socket.emit('lobby:error', { error: 'lobby not found' });
-        }
-    });
-
-    socket.on('queue:leave', () => {
-        matchService.leaveQueue(socket.id);
-    });
-
-    socket.on('disconnect', async () => {
-        matchService.leaveQueue(socket.id);
-        await handlePlayerDisconnect(socket, io);
-    });
-};
-
-const handlePlayerJoin = (socket, player = {}) => {
-    const safePlayer = {
-        id: socket.id,
-        username: player.username || `player-${socket.id.slice(0, 5)}`,
-        position: player.position || { x: 0, y: 0 },
-        score: player.score ?? 0,
-        room: player.room,
-    };
-    gameState.players[socket.id] = safePlayer;
-    return safePlayer;
-};
-
-const handlePlayerMove = async (socket, movementData, io) => {
-    const player = gameState.players[socket.id];
-    if (!player) return;
-
-    player.position = {
-        x: player.position.x + (movementData.x || 0),
-        y: player.position.y + (movementData.y || 0),
-    };
-
-    await updatePlayerPosition(socket.id, player.position);
-
-    const targetRoom = player.room;
-    if (targetRoom) {
-        io.to(targetRoom).emit('player:moved', { id: socket.id, position: player.position });
-    } else {
-        socket.broadcast.emit('player:moved', { id: socket.id, position: player.position });
-    }
-};
-
-const handlePlayerDisconnect = async (socket, io) => {
-    const player = gameState.players[socket.id];
-    delete gameState.players[socket.id];
-
-    await removePlayer(socket.id);
-
-    if (player && player.room) {
-        io.to(player.room).emit('player:disconnected', socket.id);
-    } else {
-        socket.broadcast.emit('player:disconnected', socket.id);
-    }
-
-    // If the player was part of a lobby, update host assignment if needed
-    const lobbyUpdate = matchService.removePlayerFromLobbies(socket.id);
-    if (lobbyUpdate.removed && lobbyUpdate.lobby && lobbyUpdate.newHostId) {
-        io.to(lobbyUpdate.lobby.room).emit('master:changed', { gameId: lobbyUpdate.lobby.gameId, masterClientId: lobbyUpdate.newHostId });
-        console.log(`[matchmaking] master reassigned`, { gameId: lobbyUpdate.lobby.gameId, masterClientId: lobbyUpdate.newHostId });
-    }
-};
-
-const tryMatchPlayers = async (io) => {
-    const result = matchService.matchPlayers();
-    if (!result) return;
-
-    const [gameId, player1, player2] = result;
-    const room = `room:${gameId}`;
-
-    const sockets = [player1, player2]
-        .map((id) => io.sockets.sockets.get(id))
-        .filter(Boolean);
-
-    sockets.forEach((s) => {
-        s.join(room);
-        const player = gameState.players[s.id];
-        if (player) player.room = room;
-    });
-
-    const payload = { gameId, players: sockets.map((s) => s.id), room };
-
-    await createMatch(payload);
-    io.to(room).emit('match:found', payload);
-
-    try {
-        sockets.forEach((s) => s.emit('match:joined', payload));
-
-        const socketIds = sockets.map((s) => s.id);
-        let joinedPlayers = await hydratePlayers(socketIds);
-
-        if (!joinedPlayers.length) {
-            joinedPlayers = await Promise.all(
-                sockets.map(async (s) => {
-                    const existing = gameState.players[s.id] || {
-                        id: s.id,
-                        username: `player-${s.id.slice(0, 5)}`,
-                        position: { x: 0, y: 0 },
-                        score: 0,
-                    };
-                    const withRoom = { ...existing, room };
-                    gameState.players[s.id] = withRoom;
-                    await upsertPlayer(withRoom);
-                    return withRoom;
-                })
-            );
-        }
-        io.to(room).emit('player:joined', joinedPlayers);
-    } catch (err) {
-        console.error(`[matchmaking] emit failed`, { room, err });
-    }
-};
-
-const ensurePlayerWithRoom = async (socket, room) => {
-    const existing = gameState.players[socket.id] || {
-        id: socket.id,
-        username: `player-${socket.id.slice(0, 5)}`,
-        position: { x: 0, y: 0 },
-        score: 0,
-    };
-    const withRoom = { ...existing, room };
-    gameState.players[socket.id] = withRoom;
-    await upsertPlayer(withRoom);
-    return withRoom;
-};
-
-const createLobbyForHost = async (socket, io) => {
+  const createLobbyForHost = async (socket, io) => {
     if (!socket) return null;
-    const lobby = matchService.createLobby(socket.id);
-
+    const lobby = await matchmakingService.createLobby(socket.id);
+    if (!lobby) return null;
     socket.join(lobby.room);
-    const player = await ensurePlayerWithRoom(socket, lobby.room);
+    const player = await matchmakingService.assignPlayerRoom(socket.id, lobby.room);
 
     const payload = { gameId: lobby.gameId, players: lobby.players, room: lobby.room, masterClientId: lobby.hostId };
-
-    await createMatch({ gameId: lobby.gameId, players: lobby.players, room: lobby.room });
     socket.emit('match:found', payload);
     socket.emit('match:joined', payload);
     io.to(lobby.room).emit('player:joined', [player]);
-    console.log(`[matchmaking] lobby created`, payload);
     return payload;
-};
+  };
 
-const joinLobbyById = async (socket, io, gameId) => {
+  const joinLobbyById = async (socket, io, gameId) => {
     if (!socket || !gameId) return null;
-    const lobby = matchService.addPlayerToLobby(gameId, socket.id);
+    const lobby = await matchmakingService.joinLobby(gameId, socket.id);
     if (!lobby) return null;
 
     socket.join(lobby.room);
-    await ensurePlayerWithRoom(socket, lobby.room);
-
-    // Persist updated players list for this lobby
-    await createMatch({ gameId: lobby.gameId, players: lobby.players, room: lobby.room });
+    await matchmakingService.assignPlayerRoom(socket.id, lobby.room);
 
     const payload = { gameId: lobby.gameId, players: lobby.players, room: lobby.room, masterClientId: lobby.hostId };
     socket.emit('match:joined', payload);
     io.to(lobby.room).emit('match:found', payload);
 
-    const roster = lobby.players.map((id) => gameState.players[id]).filter(Boolean);
+    const state = await matchmakingService.getGameState();
+    const roster = lobby.players.map((id) => state.players[id]).filter(Boolean);
     io.to(lobby.room).emit('player:joined', roster);
-    console.log(`[matchmaking] player joined lobby`, { gameId: lobby.gameId, players: roster.map((p) => p.id) });
     return payload;
-};
+  };
 
-const getGameState = async () => {
-    const [players, matches] = await Promise.all([listPlayers(), listMatches()]);
-    return {
-        players: players.reduce((acc, p) => {
-            acc[p.socketId] = {
-                id: p.socketId,
-                username: p.username,
-                position: p.position,
-                score: p.score,
-                room: p.room,
-            };
-            return acc;
-        }, {}),
-        matches,
-        isGameActive: matches.length > 0,
-    };
-};
+  const gameEventHandlers = (socket, io) => {
+    socket.on('player:join', async (payload = {}) => {
+      const player = await matchmakingService.registerPlayer(socket.id, payload);
+      await emitPlayerState(socket, io);
+      socket.emit('player:joined', player);
+      socket.broadcast.emit('player:joined', player);
+    });
 
-module.exports = {
+    socket.on('player:move', async (movementData = { x: 0, y: 0 }) => {
+      const player = await matchmakingService.updatePlayerPosition(socket.id, movementData);
+      if (!player) return;
+
+      if (player.room) {
+        io.to(player.room).emit('player:moved', { id: socket.id, position: player.position });
+      } else {
+        socket.broadcast.emit('player:moved', { id: socket.id, position: player.position });
+      }
+    });
+
+    socket.on('queue:join', async () => {
+      await createLobbyForHost(socket, io);
+    });
+
+    socket.on('lobby:join', async ({ gameId } = {}) => {
+      const payload = await joinLobbyById(socket, io, gameId);
+      if (!payload) {
+        socket.emit('lobby:error', { error: 'lobby not found' });
+      }
+    });
+
+    socket.on('queue:leave', () => {
+      // No-op placeholder for future queue logic
+    });
+
+    socket.on('disconnect', async () => {
+      const player = await matchmakingService.getPlayer(socket.id);
+      await matchmakingService.removePlayer(socket.id);
+      const lobbyUpdate = await matchmakingService.removePlayerFromLobbies(socket.id);
+
+      if (lobbyUpdate.removed && lobbyUpdate.lobby && lobbyUpdate.newHostId) {
+        io.to(lobbyUpdate.lobby.room).emit('master:changed', { gameId: lobbyUpdate.lobby.gameId, masterClientId: lobbyUpdate.newHostId });
+      }
+
+      const targetRoom = player?.room;
+
+      if (targetRoom) {
+        io.to(targetRoom).emit('player:disconnected', socket.id);
+      } else {
+        socket.broadcast.emit('player:disconnected', socket.id);
+      }
+    });
+  };
+
+  return {
     gameEventHandlers,
-    getGameState,
+    getGameState: () => matchmakingService.getGameState(),
     queueJoin: (socketId, io) => {
-        const socket = io.sockets?.sockets?.get(socketId);
-        return createLobbyForHost(socket, io);
+      const socket = io.sockets?.sockets?.get(socketId);
+      return createLobbyForHost(socket, io);
     },
-    queueLeave: (socketId) => {
-        matchService.leaveQueue(socketId);
-    },
-    getActiveGames: async () => listMatches(),
-    listLobbies: () => matchService.listLobbies(),
+    queueLeave: () => undefined,
+    getActiveGames: () => matchmakingService.listMatches(),
+    listLobbies: () => matchmakingService.listLobbies(),
+  };
 };
+
+module.exports = { createGameEventHandlers };

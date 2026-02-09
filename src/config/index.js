@@ -4,7 +4,7 @@ dotenv.config();
 
 const config = {
   port: Number(process.env.PORT) || 3000,
-  dbConnectionString: process.env.DB_CONNECTION_STRING || 'mongodb://localhost:27017/multiplayer-game',
+  redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   corsOrigin: process.env.CORS_ORIGIN || '*',
 };
 

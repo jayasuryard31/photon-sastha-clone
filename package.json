@@ -6,12 +6,13 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "jest",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "module": "node scripts/generate-module.js"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
     "express": "^4.17.1",
-    "mongoose": "^7.6.0",
+    "redis": "^4.6.11",
     "socket.io": "^4.0.0"
   },
   "devDependencies": {
