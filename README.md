@@ -1,96 +1,93 @@
-# Multiplayer Game Backend
+# Multiplayer Backend Template
 
-Node.js + Express + Socket.io backend for multiplayer games. State is held in Redis (in-memory) and exposed over REST and websockets with a modular, pluggable architecture.
+Minimal Node.js + Express + Socket.io template wired to Redis. Ships with a demo REST + Socket state handler to show the pattern; replace with your own modules/services.
 
-## Requirements
-
+## Prerequisites
 - Node.js 18+
-- Redis instance (default: redis://localhost:6379)
+- Redis (provide `REDIS_URL`, or run the bundled docker-compose with the local Redis profile)
 
 ## Quick start
-
 ```bash
 npm install
-npm start        # run server
+npm start          # runs server on PORT (default 3000)
 # or
-npm run dev      # nodemon
+npm run dev        # nodemon
 ```
 
-Environment (optional overrides):
-
+Environment:
 - `PORT` (default 3000)
 - `REDIS_URL` (default redis://localhost:6379)
 - `CORS_ORIGIN` (default *)
 
-Health check: `GET /health`
+Health: `GET /health` returns `{ status: "ok", mode: "template" }`
+
+## REST endpoints (current)
+- `GET /health` – service health
+- `GET /api/exampleModule/` – returns cached example payload from Redis (`example:data`, 60s TTL)
+
+## Socket demo (template)
+- Namespace: `/`
+- Events (from sockets/gameHandlers.js):
+   - `demo:ping` → responds with `demo:pong { ts }`
+   - `demo:set { ...partial }` → updates demo state (template only)
+   - `demo:state` → emitted on connect and after `demo:set`
+
+Example client: `node scripts/example-socket-client.js` (uses `SOCKET_URL`, default http://localhost:3000)
 
 ## Project layout
-
 ```
 src/
-   server.js                 # App entrypoint and wiring
+   server.js                # App entrypoint
    config/
-      index.js                # Env config
-      redisClient.js          # Redis client factory
+      index.js               # Env config
+      redisClient.js         # Redis client factory
    modules/
-      matchmaking/
-         routes.js             # REST routes (basePath: /)
-         services/
-            redisStore.js       # Redis persistence helpers
-            matchmakingService.js
+      exampleModule/          # Example REST module using Redis cache
+         route.js              # GET /api/exampleModule/
+         service.js            # getData with Redis cache (key example:data)
    routes/
-      index.js                # Auto-loads module routers
+      index.js               # Auto-loads module routers
    sockets/
-      index.js                # Socket.io bootstrap
-      gameHandlers.js         # Socket event handlers (uses matchmaking service)
+      index.js               # Socket.io bootstrap
+      gameHandlers.js        # Demo socket events
    tasks/
-      index.js                # Placeholder for background jobs
+      index.js               # Placeholder for background jobs
 scripts/
-   generate-module.js        # Module scaffolder
+   generate-module.js       # Scaffold new modules (CRUD-style)
+   example-socket-client.js # Sample Socket.io client for demo events
 test/
-   sockets.test.js|ts        # Socket smoke tests
+   sockets.test.js          # Socket demo smoke test
 package.json
 README.md
 ```
 
-## Modules and auto-routing
+## Module pattern
+- Each module under `src/modules/<name>/` can export a router instance (`module.exports = router`) or `{ router, basePath }`, or a factory (`createRoutes(deps)`).
+- The aggregator mounts at `basePath` (default `/<name>`). ExampleModule uses `basePath = '/exampleModule'` via its router file.
 
-- Each module lives under `src/modules/<name>/` and should export `createRoutes(deps)` and optional `basePath` from `routes.js`.
-- The route aggregator auto-mounts every module at `basePath` (defaults to `/<name>` if not provided). The matchmaking module sets `basePath = '/'` to keep existing URLs.
-
-## Generate a module
-
-Create a new module with a default CRUD-style REST surface and in-memory service stub:
-
+## Scaffolding new modules
+Generate a CRUD-style module stub:
 ```bash
-npm run module -- leaderboard
+npm run module -- myFeature
 ```
+This creates `src/modules/myFeature/routes.js` and `services/index.js` with in-memory CRUD placeholders. Wire them to Redis or your own store.
 
-This creates:
-
-```
-src/modules/leaderboard/
-   routes.js      # health + CRUD endpoints mounted at /leaderboard (by default)
-   services/
-      index.js     # simple in-memory service; adapt to Redis or other deps
-```
-
-You can change `basePath` inside the generated `routes.js` if you need a different mount point.
-
-## Sockets
-
-- Socket namespace is the default `/`.
-- Key events: `player:join`, `player:move`, `queue:join`, `lobby:join`, disconnect handling.
-- Socket handlers depend on the Redis-backed matchmaking service for player/lobby state.
+## Docker (optional)
+- `docker-compose.yml` includes app, Redis, and RedisInsight (UI on 8001). Use `--profile local-redis` to run the bundled Redis, or provide your own `REDIS_URL` for remote Redis.
+   ```bash
+   # with bundled Redis
+   sudo docker compose --profile local-redis up --build
+   # using external Redis (set REDIS_URL accordingly)
+   sudo docker compose up --build
+   ```
 
 ## Testing
-
 ```bash
 npm test
 ```
+Socket test asserts the demo state event; extend as you add features.
 
-The included socket test is a smoke check for client connection; extend as needed.
-
-## Contributing
-
-Pull requests are welcome. Keep modules self-contained (routes + services) and prefer Redis-backed stores for shared state.
+## Extend
+- Replace the demo module with your own business logic, keeping the folder pattern (routes + services).
+- Add more Socket.io handlers in `sockets/gameHandlers.js` and pass dependencies via `setupSocket`.
+- Add background jobs under `src/tasks` as needed.

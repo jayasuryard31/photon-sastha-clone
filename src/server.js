@@ -5,10 +5,11 @@ const { config } = require('./config');
 const { buildRouter } = require('./routes');
 const { setupSocket } = require('./sockets');
 const { createRedisClient } = require('./config/redisClient');
-const { createMatchmakingService } = require('./modules/matchmaking/services/matchmakingService');
+const morgan = require('morgan');
 
 (async () => {
   const app = express();
+  app.use(morgan('combined'));
   app.use(express.json());
 
   const server = createServer(app);
@@ -17,12 +18,11 @@ const { createMatchmakingService } = require('./modules/matchmaking/services/mat
   });
 
   const redis = await createRedisClient();
-  const matchmakingService = createMatchmakingService({ redis });
 
-  app.get('/health', (_req, res) => res.status(200).send('ok'));
-  app.use('/api', buildRouter({ io, matchmakingService }));
+  app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', mode: 'template' }));
+  app.use('/api', buildRouter({ io }));
 
-  setupSocket(io, { matchmakingService });
+  setupSocket(io);
 
   const shutdown = async () => {
     console.log('\n[server] shutting down');

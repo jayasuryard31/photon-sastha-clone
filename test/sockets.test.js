@@ -3,7 +3,7 @@ const { Server } = require('socket.io');
 const Client = require('socket.io-client');
 const { setupSocket } = require('../src/sockets');
 
-describe('Socket.io Event Handlers', () => {
+describe('Socket.io template demo', () => {
   let io;
   let httpServer;
   let address;
@@ -28,11 +28,11 @@ describe('Socket.io Event Handlers', () => {
     }
   });
 
-  it('connects a client', (done) => {
+  it('connects and receives demo:state', (done) => {
     const clientSocket = Client(`http://localhost:${address.port}`);
 
-    clientSocket.on('connect', () => {
-      expect(clientSocket.connected).toBe(true);
+    clientSocket.on('demo:state', (state) => {
+      expect(state).toBeTruthy();
       clientSocket.close();
       done();
     });

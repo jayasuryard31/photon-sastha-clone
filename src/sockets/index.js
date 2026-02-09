@@ -1,6 +1,9 @@
 const { createGameEventHandlers } = require('./gameHandlers');
 
 const createNoopService = () => ({
+  getState: async () => ({ message: 'socket template state', ts: new Date().toISOString() }),
+  setState: async (partial = {}) => ({ ...partial, ts: new Date().toISOString() }),
+  clearState: async () => undefined,
   registerPlayer: async () => null,
   updatePlayerPosition: async () => null,
   removePlayer: async () => null,

@@ -3,10 +3,10 @@ import { Server } from 'socket.io';
 import Client from 'socket.io-client';
 import { setupSocket } from '../src/sockets';
 
-describe('Socket.io Event Handlers', () => {
+describe('Socket.io template demo', () => {
     let io: Server;
     let httpServer: ReturnType<typeof createServer>;
-    let address: any;
+    let address: { port: number };
 
     beforeAll((done) => {
         httpServer = createServer();
@@ -14,7 +14,7 @@ describe('Socket.io Event Handlers', () => {
         setupSocket(io);
 
         httpServer.listen(() => {
-            address = httpServer.address();
+            address = httpServer.address() as { port: number };
             done();
         });
     });
@@ -28,11 +28,11 @@ describe('Socket.io Event Handlers', () => {
         }
     });
 
-    it('connects a client', (done) => {
+    it('connects and receives demo:state', (done) => {
         const clientSocket = Client(`http://localhost:${address.port}`);
 
-        clientSocket.on('connect', () => {
-            expect(clientSocket.connected).toBe(true);
+        clientSocket.on('demo:state', (state) => {
+            expect(state).toBeTruthy();
             clientSocket.close();
             done();
         });
